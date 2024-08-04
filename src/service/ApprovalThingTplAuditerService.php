@@ -13,7 +13,12 @@ class ApprovalThingTplAuditerService extends Base implements MainModelInterface 
 
     use \xjryanse\traits\InstTrait;
     use \xjryanse\traits\MainModelTrait;
+    use \xjryanse\traits\MainModelRamTrait;
+    use \xjryanse\traits\MainModelCacheTrait;
+    use \xjryanse\traits\MainModelCheckTrait;
+    use \xjryanse\traits\MainModelGroupTrait;
     use \xjryanse\traits\MainModelQueryTrait;
+
     use \xjryanse\traits\StaticModelTrait;
     
     protected static $mainModel;
@@ -32,6 +37,9 @@ class ApprovalThingTplAuditerService extends Base implements MainModelInterface 
         $condJson   = Strings::dataReplace($info['auditer_con'], $data);
         $condArr    = json_decode($condJson, JSON_UNESCAPED_UNICODE);
         if($info['auditer_table']){
+//            dump($info['auditer_con']);
+//            dump($data);
+            // dump($condArr);
             $auditer    = self::dbAuditer($info['auditer_table'], $condArr, $info['auditer_field']);
         } else {
             $auditer = Arrays::value($data,$info['auditer_field']);

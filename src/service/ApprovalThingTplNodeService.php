@@ -4,6 +4,7 @@ namespace xjryanse\approval\service;
 
 use xjryanse\system\interfaces\MainModelInterface;
 use xjryanse\system\service\SystemConditionService;
+use xjryanse\system\service\SystemCondService;
 use xjryanse\logic\Arrays;
 use xjryanse\logic\Arrays2d;
 
@@ -14,7 +15,12 @@ class ApprovalThingTplNodeService extends Base implements MainModelInterface {
 
     use \xjryanse\traits\InstTrait;
     use \xjryanse\traits\MainModelTrait;
+    use \xjryanse\traits\MainModelRamTrait;
+    use \xjryanse\traits\MainModelCacheTrait;
+    use \xjryanse\traits\MainModelCheckTrait;
+    use \xjryanse\traits\MainModelGroupTrait;
     use \xjryanse\traits\MainModelQueryTrait;
+
     use \xjryanse\traits\StaticModelTrait;
     
     protected static $mainModel;
@@ -23,7 +29,7 @@ class ApprovalThingTplNodeService extends Base implements MainModelInterface {
     public static function extraDetails( $ids ){
         return self::commExtraDetails($ids, function($lists) use ($ids){
             $conCon[] = ['item_type','=','approval'];            
-            $condCount     = SystemConditionService::groupBatchCount('item_key', array_column($lists,'node_key'), $conCon);
+            $condCount     = SystemCondService::groupBatchCount('item_key', array_column($lists,'node_key'), $conCon);
             // 审批人条件数
             $tplAuditerCount     = ApprovalThingTplAuditerService::groupBatchCount('node_key', array_column($lists,'node_key'));
 
@@ -44,6 +50,7 @@ class ApprovalThingTplNodeService extends Base implements MainModelInterface {
      */
     public static function listByTplId($tplId){
         $con[] = ['tpl_id','=',$tplId];
+        $con[] = ['status','=',1];
         $lists =  self::staticConList($con);
         
         return Arrays2d::sort($lists, 'level');
@@ -59,8 +66,10 @@ class ApprovalThingTplNodeService extends Base implements MainModelInterface {
         $info = $this->get();
         $con[] = ['item_key','=',$info['node_key']];
         $con[] = ['item_type','=','approval'];
-        $conCount = SystemConditionService::staticConCount($con);
-        return $conCount ? $info['node_key'] : 'APPR_COMM_COND';
+        // $conCount = SystemConditionService::staticConCount($con);
+        // 20240407:替换
+        $conCount = SystemCondService::staticConCount($con);
+        return $conCount ? $info['node_key'] : '';
     }
 
 }

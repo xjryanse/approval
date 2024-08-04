@@ -3,7 +3,6 @@
 namespace xjryanse\approval\service;
 
 use xjryanse\system\interfaces\MainModelInterface;
-use xjryanse\system\service\SystemConditionService;
 use xjryanse\system\service\SystemCondService;
 use xjryanse\system\service\SystemColumnListService;
 use xjryanse\user\service\UserService;
@@ -20,7 +19,12 @@ class ApprovalThingNodeService extends Base implements MainModelInterface {
 
     use \xjryanse\traits\InstTrait;
     use \xjryanse\traits\MainModelTrait;
+    use \xjryanse\traits\MainModelRamTrait;
+    use \xjryanse\traits\MainModelCacheTrait;
+    use \xjryanse\traits\MainModelCheckTrait;
+    use \xjryanse\traits\MainModelGroupTrait;
     use \xjryanse\traits\MainModelQueryTrait;
+
     use \xjryanse\traits\ObjectAttrTrait;
 
     public static $lastNodeFinishCount = 0;   //末个节点执行次数
@@ -29,6 +33,11 @@ class ApprovalThingNodeService extends Base implements MainModelInterface {
     //直接执行后续触发动作
     protected static $directAfter = true;
 
+    use \xjryanse\approval\service\thingNode\FieldTraits;
+    use \xjryanse\approval\service\thingNode\ApprTraits;
+    use \xjryanse\approval\service\thingNode\CalTraits;
+    use \xjryanse\approval\service\thingNode\TriggerTraits;
+    
     public static function extraDetails($ids) {
         return self::commExtraDetails($ids, function($lists) use ($ids) {
                     return self::extraDetailDeal($lists);
@@ -73,46 +82,30 @@ class ApprovalThingNodeService extends Base implements MainModelInterface {
      */
     public static function thingNodeList($thingId) {
         $lists = ApprovalThingService::getInstance($thingId)->objAttrsList('approvalThingNode');
+        // 20231122:后台关闭某些关卡
+//        $con = [['status','=',1]];
+//        $listsReal = Arrays2d::listFilter($lists, $con);
         return self::extraDetailDeal($lists);
     }
 
-    // 20210920 进一步梳理业务逻辑
-    // 获取订单的需判断节点：如果条件达成：
-    //  ---是末个节点，末个节点设为完成；获取下一个节点；
-    //  ---非末个节点，末个节点设为关闭；将当前完成节点添加写入，获取下一个节点，
-    //  ---如果下一个节点唯一，则写入待处理
-//    public static function lastNodeFinishAndNext($thingId) {
-//        // self::addFlow($thingId, 'TEST', '这是一个测试节点');
-//        // 20230419：
-//        // 提取全部节点；
-//        // 按优先级循环判断
-//        // ①获取需校验判断的节点
-//        $nextCheckNodes = self::nextCheckNodes($thingId);
-//        Debug::debug('$nextCheckNodes', $nextCheckNodes);
-//        if (!$nextCheckNodes) {
-//            return false;
-//        }
-//
-//        // 20220618是否递归的最外层循环
-//        // $isMain = self::$lastNodeFinishCount == 0;
-//        self::nodeTimesPlusAndCheck();
-//
-//        foreach ($nextCheckNodes as &$tplNode) {
-//            // 校验模板节点是否可添加
-//            if (self::canTplNodeAdd($thingId, $tplNode['id'])) {
-//                // 添加模板节点
-//                self::addFlowByTplId($thingId, $tplNode['id']);
-//            }
-//        }
-//    }
-
-    // 20210920 进一步梳理业务逻辑
-    // 获取订单的需判断节点：如果条件达成：
-    //  ---是末个节点，末个节点设为完成；获取下一个节点；
-    //  ---非末个节点，末个节点设为关闭；将当前完成节点添加写入，获取下一个节点，
-    //  ---如果下一个节点唯一，则写入待处理
-    public static function lastNodeFinishAndNextRam($thingId) {
-        // self::addFlow($thingId, 'TEST', '这是一个测试节点');
+    /**
+     * 
+     * @param type $thingId
+     * @param type $nextAuditUserId 20240407:增加下级审批人
+     * @return bool
+     */
+    public static function lastNodeFinishAndNextRam($thingId, $nextAuditUserId = '') {
+        // Debug::dump($thingId);
+        // Debug::dump($nextAuditUserId);
+        // 20240407
+        if($nextAuditUserId){
+            $nextAuditPlan = self::thingNextAuditPlan($thingId);
+            $nextNodeKey = Arrays::value($nextAuditPlan, 'nextAuditUserId') == $nextAuditUserId 
+                    ? Arrays::value($nextAuditPlan, 'nextNodeKey')
+                    : '';
+            // 添加自定义流程节点
+            return self::addFlowByNextAuditUserIdRam($thingId, $nextAuditUserId, $nextNodeKey);
+        }
         // 20230419：
         // 提取全部节点；
         // 按优先级循环判断
@@ -129,11 +122,12 @@ class ApprovalThingNodeService extends Base implements MainModelInterface {
 //            dump($tplNode);
 //            dump('能添加吗？');
             // 校验模板节点是否可添加
-            if (self::canTplNodeAdd($thingId, $tplNode['id'])) {
-                // dump('可以添加');
-                // 添加模板节点
-                self::addFlowByTplIdRam($thingId, $tplNode['id']);
+            if (!self::canTplNodeAdd($thingId, $tplNode['id'])) {
+                continue;
             }
+            // dump('可以添加');
+            // 添加模板节点
+            self::addFlowByTplIdRam($thingId, $tplNode['id']);
         }
     }
     
@@ -162,6 +156,7 @@ class ApprovalThingNodeService extends Base implements MainModelInterface {
         if (!$param) {
             throw new Exception('事项信息不存在 ' . $thingId);
         }
+        
         $param['thingId'] = $thingId;
         return $param;
     }
@@ -216,12 +211,13 @@ class ApprovalThingNodeService extends Base implements MainModelInterface {
      */
     public static function nextCheckNodes($thingId) {
         // 20230419:当前事项已有节点
-        $thingNodes = self::thingNodeList($thingId);
+        $thingNodes     = self::thingNodeList($thingId);
         // TODO:后向审批流程
         //提取level第一档；
-        $thingInfo = ApprovalThingService::getInstance($thingId)->get();
+        $thingInfo      = ApprovalThingService::getInstance($thingId)->get();
         // dump($thingInfo);
-        $tplNodeLists = ApprovalThingTplNodeService::listByTplId($thingInfo['tpl_id']);
+        $tplNodeLists   = ApprovalThingTplNodeService::listByTplId($thingInfo['tpl_id']);
+        // dump($tplNodeLists);
         // dump($thingNodes);
         // 提取未解析的节点
         foreach ($tplNodeLists as $k => $v) {
@@ -267,47 +263,9 @@ class ApprovalThingNodeService extends Base implements MainModelInterface {
         }
         //已撤销：TODO
 
-        return '测试中';
+        return 0;
     }
 
-    /**
-     * 
-     * @param type $thingId
-     * @return type
-     */
-    public static function calThingApprStr($thingId) {
-        $thingNodes = ApprovalThingService::getInstance($thingId)->objAttrsList('approvalThingNode');
-        $last = array_pop($thingNodes);
-        //提取实际审批人
-        $auditUserId            = Arrays::value($last,'audit_user_id','');
-        $auditer = $auditUserId ? UserService::getInstance($auditUserId)->fRealname() : '';
-        if ($last['audit_status'] == 1) {
-            return $auditer . '审批通过';
-        }
-        if ($last['audit_status'] == 2) {
-            return $auditer . '审批不通过';
-        }
-        if ($last['audit_status'] == 0) {
-            // 提取收件人
-            $auditer = UserService::getInstance($last['accept_user_id'])->fRealname();
-            return '等待' . $auditer . '审批';
-        }
-    }
-
-    /**
-     * 根据订单模板id添加流程
-     * @param type $orderId     订单id
-     * @param type $tplId       模板id
-     */
-//    protected static function addFlowByTplId($thingId, $tplNodeId, $data = []) {
-//        $tplNodeInfo = ApprovalThingTplNodeService::getInstance($tplNodeId)->get();
-//        $data['tpl_node_id'] = $tplNodeId;
-//        $data['node_cate'] = $tplNodeInfo['node_cate'];
-//        $data['direction'] = $tplNodeInfo['direction'];
-//        $data['level'] = $tplNodeInfo['level'];
-//
-//        return self::addFlow($thingId, $tplNodeInfo['node_key'], $tplNodeInfo['node_name'], $data);
-//    }
     
         /**
      * 根据订单模板id添加流程
@@ -323,40 +281,32 @@ class ApprovalThingNodeService extends Base implements MainModelInterface {
 
         return self::addFlowRam($thingId, $tplNodeInfo['node_key'], $tplNodeInfo['node_name'], $data);
     }
-
     /**
-     * 给订单添加流程【参数有优化】
-     * @param type $orderId
-     * @param type $nodeKey
-     * @param type $nodeName
-     * @param type $operateRole
-     * @param type $flowStatus
-     * @param array $data
+     * 20240407：下级审批人添加审批
+     * @param type $thingId
+     * @param type $tplNodeId
+     * @param type $data
      * @return type
      */
-//    public static function addFlow($thingId, $nodeKey, $nodeName, array $data = []) {
-//        $data['id'] = self::mainModel()->newId();
-//        //订单id
-//        $data['thing_id'] = $thingId;
-//        //节点key
-//        $data['node_key'] = $nodeKey;
-//        //节点名称
-//        $data['node_name'] = $nodeName;
-//        //订单信息
-//        $thingInfo = ApprovalThingService::getInstance($thingId)->get();
-//        $thingInfo['thingId'] = $thingId;
-//
-//        $data['company_id'] = Arrays::value($thingInfo, 'company_id');
-//        // 待审核
-//        $data['audit_status'] = Arrays::value($data, 'audit_status', 0);
-//        // 20230423：收件人逻辑
-//        $data['accept_user_id'] = ApprovalThingTplAuditerService::getAuditer($nodeKey, $thingInfo);
-//
-//        $res = self::save($data);
-//
-//        return $res;
-//    }
+    protected static function addFlowByNextAuditUserIdRam($thingId, $nextAuditUserId, $nodeKeyR = '') {
+        if($nextAuditUserId && !UserService::getInstance($nextAuditUserId)->get()){
+            throw new Exception('审批人不存在，请联系开发'.$nextAuditUserId);
+        }
+        // 自定义审批节点
+        $nodeKey = $nodeKeyR ? : 'diyNode';
 
+        $data['tpl_node_id']    = '';
+        $data['node_cate']      = 'appr';
+        $data['direction']      = 1;
+        $data['level']          = 99;
+        $data['accept_user_id'] = $nextAuditUserId;
+
+        $realName = UserService::getInstance($nextAuditUserId)->fRealname();
+        $nodeName = $realName.'审批';
+        
+        return self::addFlowRam($thingId, $nodeKey, $nodeName, $data);
+    }
+    
     /**
      * 给订单添加流程【参数有优化】
      * @param type $orderId
@@ -377,13 +327,15 @@ class ApprovalThingNodeService extends Base implements MainModelInterface {
         $data['node_name'] = $nodeName;
         //订单信息
         $thingInfo = ApprovalThingService::getInstance($thingId)->get();
-        $thingInfo['thingId'] = $thingId;
+        $thingInfo['thingId']   = $thingId;
 
-        $data['company_id'] = Arrays::value($thingInfo, 'company_id');
+        $data['company_id']     = Arrays::value($thingInfo, 'company_id');
         // 待审核
-        $data['audit_status'] = Arrays::value($data, 'audit_status', 0);
+        $data['audit_status']   = Arrays::value($data, 'audit_status', 0);
         // 20230423：收件人逻辑
-        $data['accept_user_id'] = ApprovalThingTplAuditerService::getAuditer($nodeKey, $thingInfo);
+        if(!Arrays::value($data, 'accept_user_id')){
+            $data['accept_user_id'] = ApprovalThingTplAuditerService::getAuditer($nodeKey, $thingInfo) ?: session(SESSION_USER_ID);
+        }
 
         $res = self::saveRam($data);
 
@@ -395,15 +347,27 @@ class ApprovalThingNodeService extends Base implements MainModelInterface {
         if (!Arrays::value($param, 'audit_status')) {
             throw new Exception('审批状态必须');
         }
+        // 20240725：当不同意时，需要输入审批意见
+        if (Arrays::value($param, 'audit_status') == 2) {
+            if (!Arrays::value($param, 'audit_reason')) {
+                throw new Exception('请输入您的审批意见');
+            }
+        }
+        
         $data['audit_status'] = Arrays::value($param, 'audit_status');
         $data['audit_reason'] = Arrays::value($param, 'audit_reason');
         $data['audit_time'] = date('Y-m-d H:i:s');
         $data['audit_user_id'] = session(SESSION_USER_ID);
-
+        // 20240803
+        $data['nextAuditUserId'] = Arrays::value($param, 'nextAuditUserId');
+        // 20240803:发现会触发流程执行，调整为doUpdateRam方法
+        // 20240803:发现流程不更新恢复
         $res = self::getInstance($id)->updateRam($data);
 
-        $nodeInfo = self::getInstance($id)->get();
-        self::lastNodeFinishAndNextRam($nodeInfo['thing_id']);
+        // $nodeInfo = self::getInstance($id)->get();
+        // 20240407
+        // $nextAuditUserId = Arrays::value($param, 'nextAuditUserId');
+        // self::lastNodeFinishAndNextRam($nodeInfo['thing_id'], $nextAuditUserId);
 
         return $res;
     }
@@ -484,15 +448,41 @@ class ApprovalThingNodeService extends Base implements MainModelInterface {
     protected static function canTplNodeAdd($thingId, $tplNodeId) {
         // 条件校验参数
         $param = self::apprTplNodeCheckParam($thingId, $tplNodeId);
+        // dump($param);exit;
         // 20230423:节点key
-        $condCheckKey = ApprovalThingTplNodeService::getInstance($tplNodeId)->keyForCondition();
+        $condCheckKeyArr = ['APPR_COMM_COND'];
+        $condCheckKeyArr[] = ApprovalThingTplNodeService::getInstance($tplNodeId)->keyForCondition();
+        // dump($condCheckKey);exit;
         // 校验是否达成
         // $isReached = SystemConditionService::isReachByItemKey('approval', $condCheckKey, $param);
         // 20230729:替换
-        $isReached = SystemCondService::isReachByItemKey('approval', $condCheckKey,$thingId, $param);
+        $isReached = SystemCondService::isReachByItemKeyMulti('approval', $condCheckKeyArr,$thingId, $param);
+// Debug::dump($param);
         return $isReached;
     }
 
+    /**
+     * 是否需要经过该审批节点：
+     * 使用场景：审批流程的预提取
+     */
+    protected static function isNodeNeedPass($thingId, $tplNodeId) {
+        // 条件校验参数
+        $param = self::apprTplNodeCheckParam($thingId, $tplNodeId);
+        // dump($param);exit;
+        // 20230423:节点key
+        $condCheckKey = ApprovalThingTplNodeService::getInstance($tplNodeId)->keyForCondition();
+
+        if(!$condCheckKey){
+            // 20240803:没节点默认要过
+            return true;
+        }
+        // dump($condCheckKey);exit;
+        // 20230729:替换
+        $isReached = SystemCondService::isReachByItemKey('approval', $condCheckKey,$thingId, $param);
+
+        return $isReached;
+    }
+    
     /**
      * 提取当前节点的后续节点
      * 使用场景：审核撤回
@@ -509,75 +499,6 @@ class ApprovalThingNodeService extends Base implements MainModelInterface {
         return $nextList;
     }
 
-    /**
-     * 20230729
-     * @param type $data
-     * @param type $uuid
-     */
-    public static function extraPreSave(&$data, $uuid) {
-        self::stopUse(__METHOD__);
-    }
-
-    public static function ramAfterSave(&$data, $uuid) {
-        //订单追加节点（内存中追加）
-        $thingId = Arrays::value($data, 'thing_id');
-        //20220617：已经封装，可以注释
-        //self::getInstance($uuid)->setUuData($data,true);
-        ApprovalThingService::getInstance($thingId)->objAttrsPush('approvalThingNode', $data);
-        //更新事项审批状态
-        ApprovalThingService::getInstance($thingId)->updateAuditStatusRam();
-        //【自动通过】
-        if (self::getInstance($uuid)->canAutoPass()) {
-            $param['audit_status'] = 1;
-            $param['audit_reason'] = '自动通过';
-            self::auditOperateRam($uuid, $param);
-        }
-
-        return $data;
-    }
-
-    public static function extraPreUpdate(&$data, $uuid) {
-        self::stopUse(__METHOD__);
-    }
-    
-    public static function ramPreUpdate(&$data, $uuid) {
-        // self::checkTransaction();
-        //订单更新节点（内存中追加）
-        $info = self::getInstance($uuid)->get(0);
-        $thingId = Arrays::value($info, 'thing_id');
-        //为了只更新传入的$data，故放在preUpdate;
-        //OrderService::getInstance($orderId)->updateFlowNode($uuid, $data);
-        ApprovalThingService::getInstance($thingId)->objAttrsUpdate('approvalThingNode', $uuid, $data);
-
-        return $data;
-    }
-
-    public static function ramAfterUpdate(&$data, $uuid) {
-        // self::checkTransaction();
-        //订单更新节点（内存中追加）
-        $info = self::getInstance($uuid)->get(0);
-        $thingId = Arrays::value($info, 'thing_id');
-        // 递归判断是否可添加下节点
-        self::lastNodeFinishAndNextRam($thingId);
-        //更新事项审批状态
-        // dump('更新');
-        // dump($data);
-        ApprovalThingService::getInstance($thingId)->updateAuditStatusRam();
-
-        return $data;
-    }
-
-    public function extraPreDelete() {
-        self::stopUse(__METHOD__);
-    }
-
-    public function ramPreDelete() {
-        $info = $this->get();
-        Debug::debug('info', $info);
-        if ($info['audit_status']) {
-            throw new Exception('已审批不可删');
-        }
-    }
 
     /**
      * 20230426：用于自动通过条件的校验key

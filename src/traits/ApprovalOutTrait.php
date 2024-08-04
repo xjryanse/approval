@@ -18,7 +18,7 @@ trait ApprovalOutTrait
     protected static function calAuditStatus(int $needAppr, $apprThingId) {
         if (!$needAppr) {
             // 不需要审批，默认通过
-            return 1;
+            // return 1;
         }
         $thing = ApprovalThingService::getInstance($apprThingId)->get();
         return Arrays::value($thing,'audit_status',0);
